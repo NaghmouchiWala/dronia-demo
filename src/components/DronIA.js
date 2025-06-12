@@ -68,8 +68,9 @@ const handleLogout = () => {
   resetForm();
 };
 
-  // Initialize map on component mount
-  useEffect(() => {
+// Initialize map after authentication
+useEffect(() => {
+  if (isAuthenticated) {
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
     script.onload = initializeMap;
@@ -79,13 +80,14 @@ const handleLogout = () => {
     link.rel = 'stylesheet';
     link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
     document.head.appendChild(link);
+  }
 
-    return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-      }
-    };
-  }, []);
+  return () => {
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.remove();
+    }
+  };
+}, [isAuthenticated]);
 
   const initializeMap = () => {
     if (typeof window.L !== 'undefined' && mapRef.current && !mapInstanceRef.current) {
@@ -298,6 +300,20 @@ const handleLogout = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+    
+    // Clean up existing map instance
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.remove();
+      mapInstanceRef.current = null;
+      markerRef.current = null;
+    }
+    
+    // Re-initialize the map after a short delay to ensure DOM is ready
+    setTimeout(() => {
+      if (mapRef.current && !mapInstanceRef.current) {
+        initializeMap();
+      }
+    }, 100);
   };
 
 // Authentication check - add this before your existing return statement
