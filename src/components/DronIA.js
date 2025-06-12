@@ -38,6 +38,25 @@ const [currentUser, setCurrentUser] = useState(null);
 const [authView, setAuthView] = useState('login'); // 'login' or 'register'
 const [isAuthenticated, setIsAuthenticated] = useState(false);
 
+const [isCameraMode, setIsCameraMode] = useState(false);
+const [stream, setStream] = useState(null);
+const cameraRef = useRef(null);
+const canvasRef = useRef(null);
+
+
+const [zoomLevel, setZoomLevel] = useState(1);
+const [showGrid, setShowGrid] = useState(false);
+
+const handleZoom = (delta) => {
+  setZoomLevel(prev => {
+    const newZoom = Math.max(0.5, Math.min(3, prev + delta));
+    if (cameraRef.current) {
+      cameraRef.current.style.transform = `scale(${newZoom})`;
+    }
+    return newZoom;
+  });
+};
+
 
 // Check for existing authentication on component mount
 useEffect(() => {
@@ -68,6 +87,86 @@ const handleLogout = () => {
   resetForm();
 };
 
+const toggleFlash = async () => {
+  if (stream) {
+    const track = stream.getVideoTracks()[0];
+    if (track.getCapabilities().torch) {
+      await track.applyConstraints({
+        advanced: [{torch: !track.getSettings().torch}]
+      });
+    }
+  }
+};
+
+const [environmentalData, setEnvironmentalData] = useState({
+  temperature: null,
+  humidity: null,
+  pressure: null,
+  lightIntensity: null,
+  soilMoisture: null
+});
+
+const [analysisHistory, setAnalysisHistory] = useState([]);
+const [showHistory, setShowHistory] = useState(false);
+
+
+
+const [isCollectingEnvData, setIsCollectingEnvData] = useState(false);
+
+const collectEnvironmentalData = () => {
+  setIsCollectingEnvData(true);
+  
+  // Simulate collecting data from sensors
+  setTimeout(() => {
+    setEnvironmentalData({
+      temperature: 25 + (Math.random() * 5 - 2.5),
+      humidity: 60 + (Math.random() * 20 - 10),
+      pressure: 1013 + (Math.random() * 10 - 5),
+      lightIntensity: Math.floor(Math.random() * 100),
+      soilMoisture: Math.floor(Math.random() * 100)
+    });
+    setIsCollectingEnvData(false);
+  }, 2000);
+};
+
+const useEnvironmentalData = () => {
+  setFormData(prev => ({
+    ...prev,
+    environmentalData: environmentalData
+  }));
+  alert('Données environnementales ajoutées à votre analyse!');
+};
+
+const handleSubmitHistory = () => {
+  if (!selectedImage) {
+    alert('Veuillez sélectionner une image');
+    return;
+  }
+  
+  setIsAnalyzing(true);
+  
+  simulateAnalysis().then(result => {
+    const newAnalysis = {
+      id: Date.now(),
+      date: new Date().toISOString(),
+      image: imagePreview,
+      location,
+      formData,
+      result
+    };
+    
+    setAnalysisHistory(prev => [newAnalysis, ...prev]);
+    localStorage.setItem('dronia_analysis_history', JSON.stringify([newAnalysis, ...analysisHistory]));
+  });
+};
+
+useEffect(() => {
+  const savedHistory = localStorage.getItem('dronia_analysis_history');
+  if (savedHistory) {
+    setAnalysisHistory(JSON.parse(savedHistory));
+  }
+}, []);
+
 // Initialize map after authentication
 useEffect(() => {
   if (isAuthenticated) {
@@ -86,6 +185,10 @@ useEffect(() => {
     if (mapInstanceRef.current) {
       mapInstanceRef.current.remove();
     }
+    // ADD THIS LINE:
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
   };
 }, [isAuthenticated]);
 
@@ -223,6 +326,91 @@ useEffect(() => {
     }
   };
 
+  const exportAnalysis = () => {
+    if (!analysisResult) return;
+    
+    const data = {
+      metadata: {
+        date: formData.date,
+        observer: formData.observateur,
+        location: location,
+        environmentalData: environmentalData
+      },
+      analysis: analysisResult,
+      image: imagePreview
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dronia-analyse-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+
+  // 2. ADD THESE FUNCTIONS after your existing functions (around line 300, after handleImageUpload)
+  const startCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'environment', // Use back camera
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        } 
+      });
+      setStream(mediaStream);
+      setIsCameraMode(true);
+      if (cameraRef.current) {
+        cameraRef.current.srcObject = mediaStream;
+        // Add this to make the video fill its container
+        cameraRef.current.style.objectFit = 'cover';
+      }
+    } catch (error) {
+      console.error('Erreur d\'accès à la caméra:', error);
+      alert('Impossible d\'accéder à la caméra. Vérifiez les permissions.');
+    }
+  };
+
+const stopCamera = () => {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    setStream(null);
+  }
+  setIsCameraMode(false);
+};
+
+const capturePhoto = () => {
+  const video = cameraRef.current;
+  const canvas = canvasRef.current;
+  
+  if (video && canvas) {
+    const context = canvas.getContext('2d');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    context.drawImage(video, 0, 0);
+    
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const file = new File([blob], 'camera-capture.jpg', { type: 'image/jpeg' });
+        setSelectedImage(file);
+        
+        const reader = new FileReader();
+        reader.onload = (e) => setImagePreview(e.target.result);
+        reader.readAsDataURL(file);
+        
+        stopCamera();
+      }
+    }, 'image/jpeg', 0.8);
+  }
+};
+
+//camera
+
   const simulateAnalysis = async () => {
     setIsAnalyzing(true);
     
@@ -337,29 +525,28 @@ if (!isAuthenticated) {
 
 // Your existing return statement stays the same after this
 return (
-  <div style={{
-    // ... rest of your existing component
-      minHeight: '100vh',
-      backgroundColor: '#f8fafc',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+  <div className="main-container" style={{
+    minHeight: '100vh',
+    backgroundColor: '#f8fafc',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+  }}>
+    <div style={{
+      maxWidth: '1400px',
+      margin: '0 auto',
+      padding: '20px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '24px'
     }}>
-      <div style={{
-        maxWidth: '1400px',
-        margin: '0 auto',
-        padding: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '24px'
-      }}>
  {/* Header */}
-<div style={{
+ <div className="header-card" style={{
   backgroundColor: 'white',
   borderRadius: '16px',
   padding: '24px',
   boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
   border: '1px solid #e2e8f0'
 }}>
-  <div style={{
+  <div className="header-content" style={{
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between'
@@ -396,14 +583,14 @@ return (
     </div>
     
     {/* User info and logout */}
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '16px'
-    }}>
-      <div style={{
-        textAlign: 'right'
-      }}>
+    <div className="user-section" style={{
+  display: 'flex',
+  alignItems: 'center',
+  gap: '16px'
+}}>
+  <div className="user-info" style={{
+    textAlign: 'right'
+  }}>
         <p style={{
           fontSize: '14px',
           fontWeight: '600',
@@ -439,14 +626,182 @@ return (
   </div>
 </div>
 
+{/* History Button */}
+<button
+  onClick={() => setShowHistory(true)}
+  style={{
+    position: 'fixed',
+    bottom: '20px',
+    right: '20px',
+    backgroundColor: '#3b82f6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '50%',
+    width: '60px',
+    height: '60px',
+    fontSize: '24px',
+    cursor: 'pointer',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+    zIndex: 100
+  }}
+>
+  <Clock size={24} />
+</button>
+
+{/* History Modal */}
+{showHistory && (
+  <div style={{
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    zIndex: 1000,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '20px'
+  }}>
+    <div style={{
+      backgroundColor: 'white',
+      borderRadius: '16px',
+      padding: '24px',
+      maxWidth: '800px',
+      width: '100%',
+      maxHeight: '80vh',
+      overflowY: 'auto',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
+    }}>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '20px'
+      }}>
+        <h2 style={{ fontSize: '24px', fontWeight: '600', margin: 0 }}>
+          Historique des analyses
+        </h2>
+        <button
+          onClick={() => setShowHistory(false)}
+          style={{
+            backgroundColor: 'transparent',
+            border: 'none',
+            fontSize: '24px',
+            cursor: 'pointer',
+            color: '#64748b'
+          }}
+        >
+          &times;
+        </button>
+      </div>
+      
+      {analysisHistory.length === 0 ? (
+        <p style={{ textAlign: 'center', color: '#64748b' }}>
+          Aucune analyse dans l'historique
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gap: '16px' }}>
+          {analysisHistory.map(item => (
+            <div key={item.id} style={{
+              backgroundColor: '#f8fafc',
+              borderRadius: '12px',
+              padding: '16px',
+              border: '1px solid #e2e8f0',
+              cursor: 'pointer',
+              ':hover': {
+                backgroundColor: '#f1f5f9'
+              }
+            }}>
+              <div style={{ display: 'flex', gap: '16px' }}>
+                <img 
+                  src={item.image} 
+                  alt="Analysis preview"
+                  style={{
+                    width: '80px',
+                    height: '80px',
+                    borderRadius: '8px',
+                    objectFit: 'cover'
+                  }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between',
+                    marginBottom: '8px'
+                  }}>
+                    <h3 style={{ 
+                      fontSize: '16px', 
+                      fontWeight: '600', 
+                      margin: 0 
+                    }}>
+                      {item.result.plantType} - {item.result.diseaseDetected ? item.result.diseaseName : 'Sain'}
+                    </h3>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      color: '#64748b' 
+                    }}>
+                      {new Date(item.date).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p style={{ 
+                    fontSize: '14px', 
+                    color: '#64748b',
+                    margin: '0 0 8px 0'
+                  }}>
+                    {item.location.city}, {item.location.country}
+                  </p>
+                  <div style={{ 
+                    display: 'flex', 
+                    gap: '8px',
+                    flexWrap: 'wrap'
+                  }}>
+                    <span style={{
+                      backgroundColor: item.result.diseaseDetected ? '#fee2e2' : '#dcfce7',
+                      color: item.result.diseaseDetected ? '#b91c1c' : '#166534',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      fontWeight: '500'
+                    }}>
+                      {item.result.diseaseDetected ? 'Maladie détectée' : 'Aucune maladie'}
+                    </span>
+                    <span style={{
+                      backgroundColor: '#e0f2fe',
+                      color: '#0369a1',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      fontWeight: '500'
+                    }}>
+                      {item.result.plantType}
+                    </span>
+                    <span style={{
+                      backgroundColor: '#fef3c7',
+                      color: '#92400e',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      fontWeight: '500'
+                    }}>
+                      {item.result.environmental.temperature}°C
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+)}
+
         {!analysisResult ? (
-          <div style={{
+          <div className="content-grid" style={{
             display: 'grid',
             gridTemplateColumns: '1fr 1fr',
-            gap: '24px',
-            '@media (max-width: 1024px)': {
-              gridTemplateColumns: '1fr'
-            }
+            gap: '24px'
           }}>
             {/* Upload Form */}
             <div style={{
@@ -469,89 +824,324 @@ return (
                 Ajouter une photo à analyser
               </h2>
               
-              {/* Image Upload */}
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  border: '2px dashed #cbd5e1',
-                  borderRadius: '12px',
-                  padding: '32px',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  marginBottom: '24px',
-                  backgroundColor: imagePreview ? 'transparent' : '#f8fafc',
-                  transition: 'all 0.2s',
-                  ':hover': {
-                    borderColor: '#10b981',
-                    backgroundColor: '#f0fdf4'
-                  }
-                }}
-              >
-                {imagePreview ? (
-                  <div>
-                    <img 
-                      src={imagePreview} 
-                      alt="Preview" 
-                      style={{
-                        maxWidth: '100%',
-                        maxHeight: '200px',
-                        borderRadius: '8px',
-                        marginBottom: '12px'
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        fileInputRef.current?.click();
-                      }}
-                      style={{
-                        backgroundColor: '#10b981',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        padding: '8px 16px',
-                        fontSize: '14px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Changer l'image
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <Upload size={48} color="#94a3b8" style={{ marginBottom: '12px' }} />
-                    <p style={{ fontSize: '16px', color: '#475569', margin: '0 0 4px 0' }}>
-                      Cliquez pour sélectionner une image
-                    </p>
-                    <p style={{ fontSize: '14px', color: '#94a3b8', margin: '0 0 16px 0' }}>
-                      JPG, PNG jusqu'à 10MB
-                    </p>
-                    <button
-                      type="button"
-                      style={{
-                        backgroundColor: '#3b82f6',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        padding: '12px 24px',
-                        fontSize: '14px',
-                        fontWeight: '500',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Parcourir
-                    </button>
-                  </div>
-                )}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  style={{ display: 'none' }}
-                />
-              </div>
+
+{/* Image Upload */}
+<div 
+  onClick={() => !isCameraMode && fileInputRef.current?.click()}
+  style={{
+    border: '2px dashed #cbd5e1',
+    borderRadius: '12px',
+    padding: '32px',
+    textAlign: 'center',
+    cursor: !isCameraMode ? 'pointer' : 'default',
+    marginBottom: '24px',
+    backgroundColor: imagePreview ? 'transparent' : '#f8fafc',
+    transition: 'all 0.2s',
+    position: 'relative'
+  }}
+>
+{isCameraMode ? (
+  <div style={{ 
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'black',
+    zIndex: 1000,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center'
+  }}>
+    <video
+      ref={cameraRef}
+      autoPlay
+      playsInline
+      style={{
+        width: '100%',
+        height: '80%',
+        backgroundColor: '#000'
+      }}
+    />
+
+    {/* Add this right after the <video> element */}
+<div style={{
+  position: 'absolute',
+  top: '20px',
+  right: '20px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '10px',
+  zIndex: 1001
+}}>
+  <button
+    onClick={() => handleZoom(0.5)}
+    style={{
+      backgroundColor: 'rgba(255,255,255,0.2)',
+      color: 'white',
+      border: 'none',
+      borderRadius: '50%',
+      width: '40px',
+      height: '40px',
+      fontSize: '18px',
+      cursor: 'pointer',
+      backdropFilter: 'blur(5px)'
+    }}
+  >
+    +
+  </button>
+  <button
+    onClick={() => handleZoom(-0.5)}
+    style={{
+      backgroundColor: 'rgba(255,255,255,0.2)',
+      color: 'white',
+      border: 'none',
+      borderRadius: '50%',
+      width: '40px',
+      height: '40px',
+      fontSize: '18px',
+      cursor: 'pointer',
+      backdropFilter: 'blur(5px)'
+    }}
+  >
+    -
+  </button>
+
+  {/* Add this with the other camera controls */}
+<button
+  onClick={toggleFlash}
+  style={{
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '50%',
+    width: '40px',
+    height: '40px',
+    fontSize: '18px',
+    cursor: 'pointer',
+    backdropFilter: 'blur(5px)',
+    position: 'absolute',
+    top: '140px',
+    right: '20px'
+  }}
+>
+  ⚡
+</button>
+
+  {/* Add this right after the zoom controls div */}
+<button
+  onClick={() => setShowGrid(!showGrid)}
+  style={{
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '50%',
+    width: '40px',
+    height: '40px',
+    fontSize: '18px',
+    cursor: 'pointer',
+    backdropFilter: 'blur(5px)',
+    position: 'absolute',
+    top: '80px',
+    right: '20px'
+  }}
+>
+  ▦
+</button>
+
+{/* Add this right before the </div> closing tag of the camera mode */}
+{showGrid && (
+  <div style={{
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: '20%',
+    pointerEvents: 'none',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gridTemplateRows: 'repeat(3, 1fr)',
+    border: '1px solid rgba(255,255,255,0.3)'
+  }}>
+    {[...Array(4)].map((_, i) => (
+      <div key={i} style={{
+        borderRight: '1px solid rgba(255,255,255,0.3)',
+        borderBottom: '1px solid rgba(255,255,255,0.3)'
+      }} />
+    ))}
+  </div>
+)}
+</div>
+    <canvas ref={canvasRef} style={{ display: 'none' }} />
+    <div style={{
+      position: 'absolute',
+      bottom: '40px',
+      left: 0,
+      right: 0,
+      display: 'flex',
+      justifyContent: 'center',
+      gap: '24px',
+      padding: '16px'
+    }}>
+      <button
+        type="button"
+        onClick={stopCamera}
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.2)',
+          color: 'white',
+          border: 'none',
+          borderRadius: '50%',
+          width: '60px',
+          height: '60px',
+          fontSize: '24px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backdropFilter: 'blur(5px)'
+        }}
+      >
+        ✕
+      </button>
+      <button
+        type="button"
+        onClick={capturePhoto}
+        style={{
+          backgroundColor: 'white',
+          color: 'black',
+          border: 'none',
+          borderRadius: '50%',
+          width: '80px',
+          height: '80px',
+          fontSize: '24px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+        }}
+      >
+        📷
+      </button>
+      <div style={{ width: '60px' }}></div> {/* Spacer */}
+    </div>
+  </div>
+) : imagePreview ? (
+    <div>
+      <img 
+        src={imagePreview} 
+        alt="Preview" 
+        style={{
+          maxWidth: '100%',
+          maxHeight: '200px',
+          borderRadius: '8px',
+          marginBottom: '12px'
+        }}
+      />
+      <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            fileInputRef.current?.click();
+          }}
+          style={{
+            backgroundColor: '#10b981',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '8px 16px',
+            fontSize: '14px',
+            cursor: 'pointer'
+          }}
+        >
+          Changer l'image
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            startCamera();
+          }}
+          style={{
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '8px 16px',
+            fontSize: '14px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <Camera size={16} />
+          Scanner
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div>
+      <Upload size={48} color="#94a3b8" style={{ marginBottom: '12px' }} />
+      <p style={{ fontSize: '16px', color: '#475569', margin: '0 0 4px 0' }}>
+        Cliquez pour sélectionner une image
+      </p>
+      <p style={{ fontSize: '14px', color: '#94a3b8', margin: '0 0 16px 0' }}>
+        JPG, PNG jusqu'à 10MB
+      </p>
+      <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          style={{
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '12px 24px',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer'
+          }}
+        >
+          Parcourir
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            startCamera();
+          }}
+          style={{
+            backgroundColor: '#10b981',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '12px 24px',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <Camera size={16} />
+          Scanner avec caméra
+        </button>
+      </div>
+    </div>
+  )}
+  <input
+    ref={fileInputRef}
+    type="file"
+    accept="image/*"
+    onChange={handleImageUpload}
+    style={{ display: 'none' }}
+  />
+</div>
+
 
               {/* Form Fields */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
@@ -756,15 +1346,16 @@ return (
               
               {/* Map Container */}
               <div
-                ref={mapRef}
-                style={{
-                  width: '100%',
-                  height: '300px',
-                  borderRadius: '12px',
-                  border: '1px solid #e2e8f0',
-                  marginBottom: '16px'
-                }}
-              />
+  ref={mapRef}
+  className="map-container"
+  style={{
+    width: '100%',
+    height: '300px',
+    borderRadius: '12px',
+    border: '1px solid #e2e8f0',
+    marginBottom: '16px'
+  }}
+/>
               
               {/* Location Display */}
               <div style={{
@@ -854,6 +1445,22 @@ return (
                 >
                   Nouvelle analyse
                 </button>
+                <button
+  onClick={exportAnalysis}
+  style={{
+    backgroundColor: '#3b82f6',
+    color: 'white',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '12px 20px',
+    fontSize: '14px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    marginLeft: '12px'
+  }}
+>
+  Exporter l'analyse
+</button>
               </div>
               
               <div style={{
@@ -1351,60 +1958,163 @@ return (
       </div>
       
       <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-        
-        .leaflet-container {
-          height: 100% !important;
-          border-radius: 12px;
-        }
-        
-        .leaflet-popup-content-wrapper {
-          border-radius: 8px;
-        }
-        
-        .leaflet-popup-content {
-          margin: 12px 16px;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          font-size: 14px;
-        }
-        
-        .leaflet-control-zoom {
-          border-radius: 8px !important;
-          border: none !important;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1) !important;
-        }
-        
-        .leaflet-control-zoom a {
-          background-color: white !important;
-          color: #374151 !important;
-          border: none !important;
-          font-weight: 600 !important;
-        }
-        
-        .leaflet-control-zoom a:hover {
-          background-color: #f8fafc !important;
-        }
-        
-        @media (max-width: 1024px) {
-          .content-grid {
-            grid-template-columns: 1fr !important;
-          }
-          
-          .form-row {
-            grid-template-columns: 1fr !important;
-          }
-          
-          .summary-grid {
-            grid-template-columns: 1fr !important;
-          }
-          
-          .environmental-grid {
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important;
-          }
-        }
+      @keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.leaflet-container {
+  height: 100% !important;
+  border-radius: 12px;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 8px;
+}
+
+.leaflet-popup-content {
+  margin: 12px 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+}
+
+.leaflet-control-zoom {
+  border-radius: 8px !important;
+  border: none !important;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1) !important;
+}
+
+.leaflet-control-zoom a {
+  background-color: white !important;
+  color: #374151 !important;
+  border: none !important;
+  font-weight: 600 !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background-color: #f8fafc !important;
+}
+
+/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+  .main-container {
+    padding: 12px !important;
+    gap: 16px !important;
+  }
+  
+  .header-card {
+    padding: 16px !important;
+  }
+  
+  .header-content {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 16px !important;
+  }
+  
+  .user-section {
+    width: 100% !important;
+    flex-direction: row !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+  }
+  
+  .user-info {
+    text-align: left !important;
+  }
+  
+  .content-grid {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+  
+  .form-card, .map-card, .results-card {
+    padding: 16px !important;
+  }
+  
+  .form-row {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+  
+  .summary-grid {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+  
+  .environmental-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+  
+  .info-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+  
+  .map-container {
+    height: 250px !important;
+  }
+  
+  .app-title {
+    font-size: 24px !important;
+  }
+  
+  .section-title {
+    font-size: 18px !important;
+  }
+  
+  .card-title {
+    font-size: 16px !important;
+  }
+  
+  .upload-area {
+    padding: 24px 16px !important;
+  }
+  
+  .env-card {
+    padding: 12px !important;
+  }
+  
+  .env-value {
+    font-size: 20px !important;
+  }
+  
+  .recommendation-item {
+    padding: 10px !important;
+  }
+  
+  .loading-modal {
+    margin: 16px !important;
+    padding: 24px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .environmental-grid {
+    grid-template-columns: 1fr !important;
+  }
+  
+  .app-title {
+    font-size: 20px !important;
+  }
+  
+  .header-card {
+    padding: 12px !important;
+  }
+  
+  .form-card, .map-card, .results-card {
+    padding: 12px !important;
+  }
+  
+  .upload-area {
+    padding: 20px 12px !important;
+  }
+  
+  .map-container {
+    height: 200px !important;
+  }
+}
       `}</style>
     </div>
   );
